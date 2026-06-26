@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#1a73e8">
+  <title>耗材管理</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css?v=15">
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<div id="app">
+  <!-- 隐私模式警告 -->
+  <div id="privacy-warning" class="privacy-warning" style="display:none">
+    <span>⚠️ 检测到隐私/无痕模式 — 关闭后数据将丢失，请先设置备份或导出！</span>
+    <button onclick="closePrivacyWarning()" class="privacy-close">&times;</button>
+  </div>
+
+  <!-- 备份状态栏 -->
+  <div id="backup-bar" class="backup-bar-container">
+    <div id="backup-status" class="backup-bar backup-inactive">检查中...</div>
+    <div id="backup-bar-actions" class="backup-actions"></div>
+  </div>
+
+  <!-- 数据恢复提示 -->
+  <div id="recovery-suggestion" class="recovery-suggestion" style="display:none">
+    <span>🛟 检测到数据可能丢失，建议从本地备份恢复。</span>
+    <button class="btn btn-primary btn-sm" onclick="openModal('modal-backup-restore')">立即恢复</button>
+  </div>
+
+  <!-- 顶部导航 -->
+  <header class="app-header">
+    <h1>耗材管理</h1>
+    <nav class="tab-bar">
+      <button class="tab active" data-tab="inventory">库存</button>
+      <button class="tab" data-tab="template">模板库</button>
+    </nav>
+  </header>
+
+  <!-- 库存页面 -->
+  <section id="inventory-page" class="page active">
+    <div class="inventory-summary">
+      <div class="summary-item">
+        <span class="summary-value" id="total-spools">0</span>
+        <span class="summary-label">在库卷数</span>
+      </div>
+      <div class="summary-item summary-breakdown">
+        <span class="summary-value" id="total-remaining">0g</span>
+        <span class="summary-label">总剩余量</span>
+        <div id="remaining-breakdown" class="remaining-breakdown"></div>
+      </div>
+    </div>
+    <div class="list-header">
+      <span class="list-title">耗材库存</span>
+      <div class="list-actions">
+        <button class="btn btn-outline btn-sm" id="btn-export">导出</button>
+        <button class="btn btn-primary btn-sm" id="btn-add-spool">+ 新增</button>
+      </div>
+    </div>
+    <div id="inventory-list" class="card-list"></div>
+    <div id="inventory-empty" class="empty-state">
+      <div class="empty-icon">🎯</div>
+      <p>还没有耗材记录</p>
+      <button class="btn btn-primary" id="btn-add-spool-empty">新增第一卷耗材</button>
+    </div>
+  </section>
+
+  <!-- 模板库页面 -->
+  <section id="template-page" class="page">
+    <div class="list-header">
+      <span class="list-title">常用模板</span>
+      <button class="btn btn-primary btn-sm" id="btn-add-template">+ 新建</button>
+    </div>
+    <div id="template-list" class="card-list"></div>
+    <div id="template-empty" class="empty-state">
+      <div class="empty-icon">📋</div>
+      <p>还没有耗材模板</p>
+      <p class="empty-hint">新建模板后，新增耗材时可快速选择</p>
+      <button class="btn btn-primary" id="btn-add-template-empty">创建第一个模板</button>
+    </div>
+  </section>
+</div>
+
+<!-- 新增耗材弹窗 -->
+<div id="modal-add-spool" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>新增耗材</h2>
+      <button class="modal-close" data-close="modal-add-spool">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="spool-edit-id">
+      <div class="form-section">
+        <label class="form-section-label">从模板快速选择</label>
+        <select id="spool-template-select" class="form-select">
+          <option value="">-- 选择模板或手动填写 --</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>品牌 <span class="required">*</span></label>
+        <select id="spool-brand-select" class="select-with-other" data-other="spool-brand-other" required>
+          <option value="">请选择</option>
+          <option value="Bambu Lab">Bambu Lab</option>
+          <option value="彩格">彩格</option>
+          <option value="Polymaker">Polymaker</option>
+          <option value="SunLu">SunLu</option>
+          <option value="R3D">R3D</option>
+          <option value="__other__">其他</option>
+        </select>
+        <input type="text" id="spool-brand-other" class="form-input-other" placeholder="请输入品牌名称" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>材料类型 <span class="required">*</span></label>
+        <select id="spool-material-select" class="select-with-other" data-other="spool-material-other" required>
+          <option value="">请选择</option>
+          <option value="PLA">PLA</option>
+          <option value="PLA+">PLA+</option>
+          <option value="ABS">ABS</option>
+          <option value="PETG">PETG</option>
+          <option value="TPU">TPU</option>
+          <option value="PA">PA（尼龙）</option>
+          <option value="PC">PC</option>
+          <option value="ASA">ASA</option>
+          <option value="PP">PP</option>
+          <option value="PVA">PVA（水溶性）</option>
+          <option value="HIPS">HIPS</option>
+          <option value="碳纤复合">碳纤复合</option>
+          <option value="玻纤复合">玻纤复合</option>
+          <option value="__other__">其他</option>
+        </select>
+        <input type="text" id="spool-material-other" class="form-input-other" placeholder="请输入材料类型" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>颜色 <span class="required">*</span></label>
+        <div id="spool-color-swatches" class="color-swatches"></div>
+        <div id="spool-color-custom-row" class="color-custom-row" style="display:none">
+          <span id="spool-color-custom-preview" class="color-custom-preview-lg"></span>
+          <input type="text" id="spool-color-custom-name" class="form-input color-input-name" placeholder="颜色名称（如：浅灰）">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>购买渠道</label>
+        <select id="spool-source-select" class="select-with-other" data-other="spool-source-other">
+          <option value="">请选择</option>
+          <option value="京东">京东</option>
+          <option value="淘宝">淘宝</option>
+          <option value="拼多多">拼多多</option>
+          <option value="__other__">其他</option>
+        </select>
+        <input type="text" id="spool-source-other" class="form-input-other" placeholder="请输入购买渠道" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>初始重量（g）<span class="required">*</span></label>
+        <input type="number" id="spool-init-weight" value="1000" step="0.1" min="0.1" required>
+      </div>
+      <div class="form-group">
+        <label>烘干时间</label>
+        <input type="date" id="spool-dry-date">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" data-close="modal-add-spool">取消</button>
+      <button class="btn btn-primary" id="btn-save-spool">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 耗材详情弹窗 -->
+<div id="modal-spool-detail" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 id="detail-title">耗材详情</h2>
+      <button class="modal-close" data-close="modal-spool-detail">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="detail-info" id="detail-info"></div>
+      <div class="form-section">
+        <label class="form-section-label">登记消耗</label>
+        <div class="consumption-form">
+          <div class="form-group">
+            <label>本次消耗（g）</label>
+            <input type="number" id="consumption-amount" placeholder="0.0" step="0.1" min="0.1">
+          </div>
+          <button class="btn btn-primary" id="btn-add-consumption">登记</button>
+        </div>
+      </div>
+      <div class="form-section">
+        <label class="form-section-label">消耗记录</label>
+        <div id="consumption-list" class="consumption-list"></div>
+        <div id="consumption-empty" class="empty-state-small">
+          <p>暂无消耗记录</p>
+        </div>
+      </div>
+      <div class="form-section">
+        <label class="form-section-label">操作</label>
+        <div class="detail-actions">
+          <button class="btn btn-outline btn-sm" id="btn-edit-spool">✏️ 编辑信息</button>
+          <button class="btn btn-outline btn-sm" id="btn-update-dry">🔄 更新烘干时间</button>
+          <button class="btn btn-danger-outline btn-sm" id="btn-delete-spool">🗑 删除此耗材</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 模板编辑弹窗 -->
+<div id="modal-template" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 id="template-modal-title">新建模板</h2>
+      <button class="modal-close" data-close="modal-template">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="template-edit-id">
+      <div class="form-group">
+        <label>品牌 <span class="required">*</span></label>
+        <select id="template-brand-select" class="select-with-other" data-other="template-brand-other" required>
+          <option value="">请选择</option>
+          <option value="Bambu Lab">Bambu Lab</option>
+          <option value="彩格">彩格</option>
+          <option value="Polymaker">Polymaker</option>
+          <option value="SunLu">SunLu</option>
+          <option value="R3D">R3D</option>
+          <option value="__other__">其他</option>
+        </select>
+        <input type="text" id="template-brand-other" class="form-input-other" placeholder="请输入品牌名称" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>材料类型 <span class="required">*</span></label>
+        <select id="template-material-select" class="select-with-other" data-other="template-material-other" required>
+          <option value="">请选择</option>
+          <option value="PLA">PLA</option>
+          <option value="PLA+">PLA+</option>
+          <option value="ABS">ABS</option>
+          <option value="PETG">PETG</option>
+          <option value="TPU">TPU</option>
+          <option value="PA">PA（尼龙）</option>
+          <option value="PC">PC</option>
+          <option value="ASA">ASA</option>
+          <option value="PP">PP</option>
+          <option value="PVA">PVA（水溶性）</option>
+          <option value="HIPS">HIPS</option>
+          <option value="碳纤复合">碳纤复合</option>
+          <option value="玻纤复合">玻纤复合</option>
+          <option value="__other__">其他</option>
+        </select>
+        <input type="text" id="template-material-other" class="form-input-other" placeholder="请输入材料类型" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>颜色 <span class="required">*</span></label>
+        <div id="template-color-swatches" class="color-swatches"></div>
+        <div id="template-color-custom-row" class="color-custom-row" style="display:none">
+          <span id="template-color-custom-preview" class="color-custom-preview-lg"></span>
+          <input type="text" id="template-color-custom-name" class="form-input color-input-name" placeholder="颜色名称（如：浅灰）">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>购买渠道</label>
+        <select id="template-source-select" class="select-with-other" data-other="template-source-other">
+          <option value="">请选择</option>
+          <option value="京东">京东</option>
+          <option value="淘宝">淘宝</option>
+          <option value="拼多多">拼多多</option>
+          <option value="__other__">其他</option>
+        </select>
+        <input type="text" id="template-source-other" class="form-input-other" placeholder="请输入购买渠道" style="display:none">
+      </div>
+      <div class="form-group">
+        <label>初始重量（g）<span class="required">*</span></label>
+        <input type="number" id="template-init-weight" value="1000" step="0.1" min="0.1" required>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" data-close="modal-template">取消</button>
+      <button class="btn btn-primary" id="btn-save-template">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 确认删除弹窗 -->
+<div id="modal-confirm" class="modal">
+  <div class="modal-content modal-sm">
+    <div class="modal-header">
+      <h2>确认操作</h2>
+      <button class="modal-close" data-close="modal-confirm">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirm-message"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" data-close="modal-confirm">取消</button>
+      <button class="btn btn-danger" id="btn-confirm-yes">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 备份恢复弹窗 -->
+<div id="modal-backup-restore" class="modal">
+  <div class="modal-content modal-sm">
+    <div class="modal-header">
+      <h2>从备份恢复</h2>
+      <button class="modal-close" data-close="modal-backup-restore">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom:12px;color:var(--text-secondary);font-size:14px;">
+        将读取备份文件恢复全部数据（模板 + 库存 + 消耗记录）。<br>
+        <strong style="color:var(--danger)">⚠️ 当前数据将被覆盖！</strong>
+      </p>
+      <p style="margin-bottom:8px;font-size:13px;color:var(--text-muted);">
+        已设置过备份路径则直接读取，否则手动选择文件。
+      </p>
+      <button class="btn btn-primary btn-block" onclick="restoreFromBackup()">读取备份并恢复</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" data-close="modal-backup-restore">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<script>
+// 强制清除所有 SW 和缓存（始终执行）
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(function(regs) {
+    return Promise.all(regs.map(function(r) { return r.unregister(); }));
+  }).then(function() {
+    return caches.keys().then(function(keys) {
+      return Promise.all(keys.map(function(k) { return caches.delete(k); }));
+    });
+  }).then(function() {
+    // 仅当非强制刷新参数时重定向一次
+    if (!window.location.search.includes('swv=15')) {
+      window.location.replace(window.location.pathname + '?swv=15');
+    }
+  });
+}
+</script>
+<script src="app.js?v=15"></script>
+</body>
+</html>
