@@ -782,3 +782,23 @@ body {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }
 }
+
+/* Version Label */
+.version-label {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.5;
+  pointer-events: none;
+  user-select: none;
+  z-index: 100;
+  font-family: var(--font-mono);
+}
+
+/* Backup Hint */
+.backup-hint {
+  cursor: help;
+  border-bottom: 1px dotted var(--text-muted);
+}

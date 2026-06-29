@@ -121,8 +121,9 @@ async function setSetting(key, value) {
   return idbReq(tx('settings', 'readwrite').put({ key, value }));
 }
 
-// ===== File System Backup =====
+// ===== Backup (Download) =====
 const BACKUP_FILENAME = '3d-filament-backup.json';
+const APP_VERSION = 'v1.1.0';
 
 let isDirty = false;
 
@@ -133,96 +134,37 @@ async function markDataChanged() {
   updateBackupStatus();
 }
 
-async function getBackupFileHandle() {
-  try {
-    const setting = await getSetting('backupFileHandle');
-    if (setting && setting.value) return setting.value;
-  } catch (_) {}
-  return null;
-}
-
-async function setBackupPath() {
-  if (!('showSaveFilePicker' in window)) {
-    toast('浏览器不支持，请用 Chrome/Edge/华为浏览器');
-    return;
-  }
-
-  try {
-    const handle = await window.showSaveFilePicker({
-      suggestedName: BACKUP_FILENAME,
-      types: [{ description: '备份文件', accept: { 'application/json': ['.json'] } }]
-    });
-
-    await setSetting('backupFileHandle', handle);
-    // 首次设置后立即写一份备份
-    await doWriteBackup(handle);
-    toast('备份路径已设置');
-    updateBackupStatus();
-  } catch (err) {
-    if (err.name !== 'AbortError') {
-      console.error(err);
-      toast('设置失败，请重试');
-    }
-  }
-}
-
 async function backupNow() {
-  const handle = await getBackupFileHandle();
-  if (!handle) {
-    // 未设置过，引导设置
-    toast('请先设置备份路径');
-    await setBackupPath();
-    return;
-  }
-
-  // 检查并恢复权限
   try {
-    const opts = { mode: 'readwrite' };
-    let perm = await handle.queryPermission(opts);
-    if (perm !== 'granted') {
-      perm = await handle.requestPermission(opts);
+    const templates = await getTemplates();
+    const spools = await getSpools();
+    const allConsumptions = [];
+    for (const s of spools) {
+      const cs = await getConsumptions(s.id);
+      allConsumptions.push(...cs);
     }
-    if (perm !== 'granted') {
-      toast('需要文件写入权限才能备份');
-      return;
-    }
-  } catch (_) {
-    // 句柄失效，重新设置
-    toast('备份路径已失效，请重新设置');
-    await setSetting('backupFileHandle', null);
+
+    const backupData = { version: 1, lastBackup: new Date().toISOString(), templates, spools, consumptions: allConsumptions };
+    const json = JSON.stringify(backupData, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = BACKUP_FILENAME;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    const now = new Date().toISOString();
+    await setSetting('lastBackup', now);
+    isDirty = false;
     updateBackupStatus();
-    return;
-  }
-
-  try {
-    await doWriteBackup(handle);
-    await updateBackupStatus();
     toast('备份完成');
   } catch (err) {
     console.error(err);
     toast('备份失败，请重试');
   }
-}
-
-async function doWriteBackup(handle) {
-  const templates = await getTemplates();
-  const spools = await getSpools();
-  const allConsumptions = [];
-  for (const s of spools) {
-    const cs = await getConsumptions(s.id);
-    allConsumptions.push(...cs);
-  }
-
-  const backupData = { version: 1, lastBackup: new Date().toISOString(), templates, spools, consumptions: allConsumptions };
-
-  const writable = await handle.createWritable();
-  await writable.write(JSON.stringify(backupData, null, 2));
-  await writable.close();
-
-  const now = new Date().toISOString();
-  await setSetting('lastBackup', now);
-  isDirty = false;
-  updateBackupStatus();
 }
 
 async function restoreFromBackup() {
@@ -233,33 +175,15 @@ async function restoreFromBackup() {
 
   let file;
 
-  // 优先尝试已保存的句柄直接读
-  const handle = await getBackupFileHandle();
-  if (handle) {
-    try {
-      const opts = { mode: 'read' };
-      let perm = await handle.queryPermission(opts);
-      if (perm !== 'granted') {
-        perm = await handle.requestPermission(opts);
-      }
-      if (perm === 'granted') {
-        file = await handle.getFile();
-      }
-    } catch (_) {}
-  }
-
-  // 句柄读不到，让用户手动选文件
-  if (!file) {
-    try {
-      const [fh] = await window.showOpenFilePicker({
-        types: [{ description: '备份文件', accept: { 'application/json': ['.json'] } }],
-        multiple: false
-      });
-      file = await fh.getFile();
-    } catch (err) {
-      if (err.name !== 'AbortError') toast('读取文件失败');
-      return;
-    }
+  try {
+    const [fh] = await window.showOpenFilePicker({
+      types: [{ description: '备份文件', accept: { 'application/json': ['.json'] } }],
+      multiple: false
+    });
+    file = await fh.getFile();
+  } catch (err) {
+    if (err.name !== 'AbortError') toast('读取文件失败');
+    return;
   }
 
   try {
@@ -339,14 +263,6 @@ async function updateBackupStatus() {
   const btnEl = document.getElementById('backup-bar-actions');
   if (!statusEl) return;
 
-  const handle = await getBackupFileHandle();
-  if (!handle) {
-    statusEl.className = 'backup-bar backup-inactive';
-    statusEl.textContent = '⚠️ 未设置备份路径';
-    if (btnEl) btnEl.innerHTML = '<button class="btn-backup-sm btn-backup-primary" onclick="setBackupPath()">📁 设置备份</button><button class="btn-backup-sm" onclick="openModal(\'modal-backup-restore\')">🔄 恢复</button>';
-    return;
-  }
-
   const setting = await getSetting('lastBackup');
   const lastTime = setting ? setting.value : null;
   const timeStr = lastTime ? fmtTimeShort(lastTime) : '-';
@@ -354,9 +270,12 @@ async function updateBackupStatus() {
   if (isDirty) {
     statusEl.className = 'backup-bar backup-dirty';
     statusEl.innerHTML = `🔴 需备份`;
+  } else if (lastTime) {
+    statusEl.className = 'backup-bar backup-active';
+    statusEl.innerHTML = `🔒 已备份 · ${BACKUP_FILENAME} · <span class="backup-hint" title="文件已保存到浏览器默认下载目录">${timeStr}</span>`;
   } else {
     statusEl.className = 'backup-bar backup-active';
-    statusEl.innerHTML = `🔒 已备份 · ${timeStr}`;
+    statusEl.innerHTML = `📁 尚未备份`;
   }
 
   if (btnEl) {
@@ -1485,16 +1404,11 @@ async function init() {
 
   await renderInventory();
   await renderTemplates();
-
-  // 检查是否需要恢复（IndexedDB 为空但曾设置过备份）
-  const templates = await getTemplates();
-  const spools = await getSpools();
-  const backupHandle = await getBackupFileHandle();
-  if (templates.length === 0 && spools.length === 0 && backupHandle) {
-    document.getElementById('recovery-suggestion').style.display = 'block';
-  }
-
   await updateBackupStatus();
+
+  // 版本号
+  const vl = document.getElementById('version-label');
+  if (vl) vl.textContent = APP_VERSION;
 
   initColorPickers();
 
