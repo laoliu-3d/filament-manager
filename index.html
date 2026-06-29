@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#1a73e8">
   <title>耗材管理</title>
   <link rel="manifest" href="manifest.json">
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=16">
   <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
@@ -38,6 +38,7 @@
     <nav class="tab-bar">
       <button class="tab active" data-tab="inventory">库存</button>
       <button class="tab" data-tab="template">模板库</button>
+      <button class="tab" data-tab="consumed">消耗库</button>
     </nav>
   </header>
 
@@ -81,6 +82,20 @@
       <p>还没有耗材模板</p>
       <p class="empty-hint">新建模板后，新增耗材时可快速选择</p>
       <button class="btn btn-primary" id="btn-add-template-empty">创建第一个模板</button>
+    </div>
+  </section>
+
+  <!-- 消耗库页面 -->
+  <section id="consumed-page" class="page">
+    <div id="consumed-summary" class="consumed-summary"></div>
+    <div class="list-header">
+      <span class="list-title">消耗库</span>
+    </div>
+    <div id="consumed-list" class="card-list"></div>
+    <div id="consumed-empty" class="empty-state">
+      <div class="empty-icon">♻️</div>
+      <p>还没有已消耗的耗材</p>
+      <p class="empty-hint">库存中余量为 0 的耗材可手动移入消耗库</p>
     </div>
   </section>
 </div>
@@ -156,6 +171,10 @@
       <div class="form-group">
         <label>初始重量（g）<span class="required">*</span></label>
         <input type="number" id="spool-init-weight" value="1000" step="0.1" min="0.1" required>
+      </div>
+      <div class="form-group">
+        <label>价格（元）</label>
+        <input type="number" id="spool-price" placeholder="选填" step="0.01" min="0">
       </div>
       <div class="form-group">
         <label>烘干时间</label>
@@ -338,8 +357,8 @@ if ('serviceWorker' in navigator) {
     });
   }).then(function() {
     // 仅当非强制刷新参数时重定向一次
-    if (!window.location.search.includes('swv=15')) {
-      window.location.replace(window.location.pathname + '?swv=15');
+    if (!window.location.search.includes('swv=16')) {
+      window.location.replace(window.location.pathname + '?swv=16');
     }
   });
 }

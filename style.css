@@ -802,3 +802,55 @@ body {
   cursor: help;
   border-bottom: 1px dotted var(--text-muted);
 }
+
+/* Consumed Page */
+.consumed-summary {
+  display: flex;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+  flex-wrap: wrap;
+}
+.consumed-stat {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--primary-light);
+  padding: 6px 14px;
+  border-radius: 20px;
+}
+
+.consumed-card {
+  opacity: 0.85;
+}
+.consumed-price {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.tag-weight {
+  background: var(--bg);
+  color: var(--text-secondary);
+}
+
+.btn-move-consumed {
+  margin-top: 10px;
+  width: 100%;
+  padding: 8px;
+  border: 1px dashed var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-move-consumed:hover {
+  background: var(--primary);
+  color: #fff;
+}

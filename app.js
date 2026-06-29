@@ -1,6 +1,6 @@
 // ===== IndexedDB =====
 const DB_NAME = 'FilamentDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let db = null;
 
@@ -9,6 +9,7 @@ function openDB() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
+      const oldVersion = e.oldVersion;
       if (!db.objectStoreNames.contains('templates')) {
         const ts = db.createObjectStore('templates', { keyPath: 'id', autoIncrement: true });
         ts.createIndex('brand', 'brand', { unique: false });
@@ -23,6 +24,21 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      // v2→v3: 为已有 spools 补充默认 status 和 price
+      if (oldVersion < 3) {
+        const tx = e.target.transaction;
+        const store = tx.objectStore('spools');
+        store.openCursor().onsuccess = (ev) => {
+          const cursor = ev.target.result;
+          if (cursor) {
+            const data = cursor.value;
+            if (data.status === undefined) data.status = 'active';
+            if (data.price === undefined) data.price = null;
+            cursor.update(data);
+            cursor.continue();
+          }
+        };
       }
     };
     req.onsuccess = (e) => {
@@ -123,7 +139,7 @@ async function setSetting(key, value) {
 
 // ===== Backup (Download) =====
 const BACKUP_FILENAME = '3d-filament-backup.json';
-const APP_VERSION = 'v1.1.0';
+const APP_VERSION = 'v1.2.0';
 
 let isDirty = false;
 
@@ -144,7 +160,7 @@ async function backupNow() {
       allConsumptions.push(...cs);
     }
 
-    const backupData = { version: 1, lastBackup: new Date().toISOString(), templates, spools, consumptions: allConsumptions };
+    const backupData = { version: 2, lastBackup: new Date().toISOString(), templates, spools, consumptions: allConsumptions };
     const json = JSON.stringify(backupData, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -225,6 +241,8 @@ async function restoreFromBackup() {
         source: s.source || '', initWeight: s.initWeight || 1000,
         consumedWeight: s.consumedWeight || 0,
         dryDate: s.dryDate || null,
+        price: s.price != null ? s.price : null,
+        status: s.status || 'active',
         createdAt: s.createdAt || new Date().toISOString(),
         updatedAt: s.updatedAt || new Date().toISOString()
       }));
@@ -246,6 +264,7 @@ async function restoreFromBackup() {
     await setSetting('lastBackup', new Date().toISOString());
     await renderInventory();
     await renderTemplates();
+    await renderConsumedList();
     updateBackupStatus();
     closePrivacyWarning();
     toast(`恢复完成: ${count.templates} 模板, ${count.spools} 耗材, ${count.consumptions} 记录`);
@@ -354,7 +373,8 @@ function showConfirm(msg, cb) {
 
 // ===== Inventory Page =====
 async function renderInventory() {
-  const spools = await getSpools();
+  const allSpools = await getSpools();
+  const spools = allSpools.filter(s => (s.status || 'active') === 'active');
   const listEl = document.getElementById('inventory-list');
   const emptyEl = document.getElementById('inventory-empty');
 
@@ -427,6 +447,10 @@ async function renderInventory() {
       dryClass = 'dry-ok';
     }
 
+    const moveBtn = remaining <= 0
+      ? `<button class="btn-move-consumed" onclick="event.stopPropagation();moveToConsumed(${s.id})">📦 移入消耗库</button>`
+      : '';
+
     return `
       <div class="card" onclick="openSpoolDetail(${s.id})">
         <div class="card-header">
@@ -443,6 +467,7 @@ async function renderInventory() {
           <span>录入: ${fmtDate(s.createdAt)}</span>
           <span class="${dryClass}">${dryText}</span>
         </div>
+        ${moveBtn}
       </div>
     `;
   }
@@ -481,6 +506,120 @@ async function renderInventory() {
 
   listEl.innerHTML = html;
 }
+
+async function moveToConsumed(id) {
+  const s = await getSpool(id);
+  if (!s) return;
+  s.status = 'consumed';
+  await saveSpool(s);
+  renderInventory();
+  renderConsumedList();
+  markDataChanged();
+  toast('已移入消耗库');
+}
+
+// ===== Consumed Page =====
+async function renderConsumedList() {
+  const allSpools = await getSpools();
+  const consumed = allSpools.filter(s => s.status === 'consumed');
+  const listEl = document.getElementById('consumed-list');
+  const emptyEl = document.getElementById('consumed-empty');
+  const summaryEl = document.getElementById('consumed-summary');
+
+  if (consumed.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.style.display = 'block';
+    if (summaryEl) summaryEl.innerHTML = '';
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  let totalWeight = 0;
+  let totalPrice = 0;
+  consumed.forEach(s => {
+    const w = s.initWeight || 0;
+    totalWeight += w;
+    if (s.price != null) totalPrice += s.price;
+  });
+
+  if (summaryEl) {
+    const weightStr = totalWeight >= 1000 ? (totalWeight / 1000).toFixed(1) + 'kg' : totalWeight.toFixed(1) + 'g';
+    summaryEl.innerHTML = `
+      <span class="consumed-stat">总计消耗 ${weightStr}</span>
+      <span class="consumed-stat">总计费用 ¥${totalPrice.toFixed(2)}</span>`;
+  }
+
+  const brandGroups = {};
+  consumed.forEach(s => {
+    const brand = s.brand || '未分类';
+    if (!brandGroups[brand]) brandGroups[brand] = {};
+    const mat = s.material || '其他';
+    if (!brandGroups[brand][mat]) brandGroups[brand][mat] = [];
+    brandGroups[brand][mat].push(s);
+  });
+
+  const sortedBrands = sortBrandKeys(Object.keys(brandGroups));
+
+  function consumedCard(s) {
+    const priceStr = s.price != null ? `¥${s.price.toFixed(2)}` : '未填';
+    return `
+      <div class="card consumed-card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">${colorSwatchHTML(s.color, 22)} ${escHtml(colorName(s.color))}</div>
+            <div class="card-subtitle">${escHtml(s.source || '未填渠道')}</div>
+          </div>
+          <div class="consumed-price">${priceStr}</div>
+        </div>
+        <div class="card-tags">
+          <span class="tag tag-material">${escHtml(s.material)}</span>
+          <span class="tag tag-weight">${(s.initWeight || 0).toFixed(1)}g</span>
+        </div>
+        <div class="card-footer">
+          <span>录入: ${fmtDate(s.createdAt)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  let html = '';
+  sortedBrands.forEach(brand => {
+    const matGroups = brandGroups[brand];
+    const sortedMats = Object.keys(matGroups).sort((a, b) => a.localeCompare(b, 'zh'));
+    const brandKey = 'c-' + brand.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_');
+    const totalInBrand = Object.values(matGroups).reduce((sum, arr) => sum + arr.length, 0);
+
+    html += `<div class="group-header brand-header" data-toggle="brand-${brandKey}">
+      <div class="group-header-left">
+        <span class="group-toggle" data-toggle="brand-${brandKey}">▼</span>
+        <span class="group-title">${escHtml(brand)}</span>
+      </div>
+      <span class="group-count">${totalInBrand}卷</span>
+    </div>`;
+    html += `<div class="group-body" id="body-brand-${brandKey}">`;
+
+    sortedMats.forEach(mat => {
+      const items = matGroups[mat];
+      const matKey = brandKey + '-' + mat.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_');
+      html += `<div class="group-subheader material-subheader" data-toggle="mat-${matKey}">
+        <span class="group-toggle" data-toggle="mat-${matKey}">▼</span>
+        <span>${escHtml(mat)} · ${items.length}卷</span>
+      </div>`;
+      html += `<div class="group-body" id="body-mat-${matKey}">`;
+      html += items.map(consumedCard).join('');
+      html += `</div>`;
+    });
+
+    html += `</div>`;
+  });
+
+  listEl.innerHTML = html;
+}
+
+// Event delegation for group header toggles - consumed
+document.getElementById('consumed-list').addEventListener('click', function(e) {
+  handleGroupToggle(e);
+});
 
 // Event delegation for group header toggles - inventory
 document.getElementById('inventory-list').addEventListener('click', function(e) {
@@ -970,6 +1109,7 @@ async function openAddSpool() {
   resetColorPicker('spool-color-swatches', 'spool-color-custom-name');
   resetSelectValue('spool-source-select');
   document.getElementById('spool-init-weight').value = '1000';
+  document.getElementById('spool-price').value = '';
   document.getElementById('spool-dry-date').value = '';
 
   openModal('modal-add-spool');
@@ -1000,6 +1140,7 @@ async function editSpool(id) {
   setColorPickerValue('spool-color-swatches', 'spool-color-custom-name', s.color);
   setSelectValue('spool-source-select', s.source || '');
   document.getElementById('spool-init-weight').value = s.initWeight || 1000;
+  document.getElementById('spool-price').value = s.price != null ? s.price : '';
   document.getElementById('spool-dry-date').value = s.dryDate || '';
 
   openModal('modal-add-spool');
@@ -1023,6 +1164,8 @@ document.getElementById('btn-save-spool').addEventListener('click', async () => 
   const color = getColorPickerValue('spool-color-swatches', 'spool-color-custom-name');
   const source = getSelectValue('spool-source-select');
   const initWeight = parseFloat(document.getElementById('spool-init-weight').value);
+  const priceVal = document.getElementById('spool-price').value;
+  const price = priceVal ? parseFloat(priceVal) : null;
   const dryDate = document.getElementById('spool-dry-date').value || null;
   const editId = document.getElementById('spool-edit-id').value;
 
@@ -1032,17 +1175,19 @@ document.getElementById('btn-save-spool').addEventListener('click', async () => 
   }
 
   if (editId) {
-    // 编辑模式：保留已有的消耗数据
+    // 编辑模式：保留已有的消耗数据和状态
     const existing = await getSpool(parseInt(editId));
     const data = {
       id: parseInt(editId),
       brand, material, color, source, initWeight, dryDate,
       consumedWeight: existing ? (existing.consumedWeight || 0) : 0,
+      price: price,
+      status: existing ? (existing.status || 'active') : 'active',
       createdAt: existing ? existing.createdAt : new Date().toISOString()
     };
     await saveSpool(data);
   } else {
-    await saveSpool({ brand, material, color, source, initWeight, dryDate, consumedWeight: 0 });
+    await saveSpool({ brand, material, color, source, initWeight, dryDate, consumedWeight: 0, price, status: 'active' });
   }
 
   closeModal('modal-add-spool');
@@ -1064,6 +1209,7 @@ async function openSpoolDetail(id) {
   if (!s) return;
 
   const remaining = (s.initWeight || 0) - (s.consumedWeight || 0);
+  const priceStr = s.price != null ? `¥${s.price.toFixed(2)}` : '未填写';
   const ds = daysSince(s.dryDate);
   const dryInfo = s.dryDate
     ? `${fmtDate(s.dryDate)} (距今 ${ds} 天，${ds > 30 ? '建议烘干' : '正常'})`
@@ -1075,6 +1221,7 @@ async function openSpoolDetail(id) {
     <div class="detail-row"><span class="label">材料类型</span><span class="value">${escHtml(s.material)}</span></div>
     <div class="detail-row"><span class="label">颜色</span><span class="value">${colorSwatchHTML(s.color, 18)} ${escHtml(colorName(s.color))}</span></div>
     <div class="detail-row"><span class="label">购买渠道</span><span class="value">${escHtml(s.source || '未填写')}</span></div>
+    <div class="detail-row"><span class="label">价格</span><span class="value">${priceStr}</span></div>
     <div class="detail-row"><span class="label">初始重量</span><span class="value">${s.initWeight.toFixed(1)}g</span></div>
     <div class="detail-row"><span class="label">累计消耗</span><span class="value">${(s.consumedWeight || 0).toFixed(1)}g</span></div>
     <div class="detail-row"><span class="label">剩余量</span><span class="value" style="color:${remaining <= 0 ? 'var(--danger)' : 'var(--success)'};font-size:18px;">${remaining.toFixed(1)}g</span></div>
@@ -1357,9 +1504,11 @@ document.getElementById('btn-export').addEventListener('click', async () => {
     '颜色': colorName(s.color),
     '颜色Hex': colorHex(s.color),
     '购买渠道': s.source || '',
+    '价格(元)': s.price != null ? s.price : '',
     '初始重量(g)': s.initWeight,
     '累计消耗(g)': (s.consumedWeight || 0).toFixed(1),
     '剩余量(g)': ((s.initWeight || 0) - (s.consumedWeight || 0)).toFixed(1),
+    '状态': s.status === 'consumed' ? '已消耗' : '库存中',
     '烘干时间': s.dryDate || '',
     '录入时间': s.createdAt
   }));
@@ -1404,6 +1553,7 @@ async function init() {
 
   await renderInventory();
   await renderTemplates();
+  await renderConsumedList();
   await updateBackupStatus();
 
   // 版本号
